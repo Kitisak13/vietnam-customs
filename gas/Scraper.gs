@@ -41,7 +41,10 @@ var Scraper = (function () {
         }
       } catch (e) {
         console.error(
-          "Error fetching page " + (pageCount + 1) + ": " + e.toString(),
+          "Error fetching page " +
+            (pageCount + 1) +
+            ": " +
+            Config.sanitizeLog(e.toString()),
         );
         hasMore = false;
       }

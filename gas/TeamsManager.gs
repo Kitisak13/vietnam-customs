@@ -11,6 +11,14 @@ var TeamsManager = (function () {
    * @returns {boolean} True if current or pending notification sent, false otherwise
    */
   function checkAndNotify(sheetStats, downloadStats) {
+    // If Teams webhook URL is not configured, exit early without queueing pending notifications
+    if (!Config.getTeamsWebhookUrl()) {
+      console.log(
+        "TEAMS_WEBHOOK_URL is not configured. Skipping Teams notification.",
+      );
+      return false;
+    }
+
     var props = PropertiesService.getScriptProperties();
 
     // 1. Flush any pending notifications that previously failed to deliver

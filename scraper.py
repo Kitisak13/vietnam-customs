@@ -346,14 +346,18 @@ def download_reports(rows, output_dir: Path, api_key: str):
         for dl_attempt in range(1, 3):
             try:
                 with requests.get(download_proxy_url, stream=True, timeout=60) as resp:
-                    content_type = (resp.headers.get("Content-Type") or "").lower()
-
-                    # Reject HTML error/maintenance pages
-                    if "text/html" in content_type:
-                        print(f"   [Error] Rejected download for {file_name}: received HTML instead of binary file.")
-                        break
-
                     if resp.status_code == 200:
+                        content_type = (resp.headers.get("Content-Type") or "").lower()
+
+                        # Reject HTML error/maintenance pages
+                        if "text/html" in content_type:
+                            print(f"   [Error] Rejected download for {file_name}: received HTML instead of binary file.")
+                            if dl_attempt < 2:
+                                time.sleep(2)
+                                continue
+                            else:
+                                break
+
                         with open(temp_path, "wb") as f:
                             for chunk in resp.iter_content(chunk_size=8192):
                                 if chunk:
