@@ -80,6 +80,7 @@ var SheetManager = (function () {
 
     var addedCount = 0;
     var updatedCount = 0;
+    var newItems = [];
     var now = new Date();
 
     data.forEach(function (row) {
@@ -116,6 +117,11 @@ var SheetManager = (function () {
             now,
           ];
           updatedCount++;
+          newItems.push({
+            content: contentNorm,
+            month: monthNorm,
+            status: "updated",
+          });
         }
       } else {
         var newRow = [
@@ -129,6 +135,11 @@ var SheetManager = (function () {
         keyToIndex[key] = existingRows.length;
         existingRows.push(newRow);
         addedCount++;
+        newItems.push({
+          content: contentNorm,
+          month: monthNorm,
+          status: "new",
+        });
       }
     });
 
@@ -167,6 +178,7 @@ var SheetManager = (function () {
       added: addedCount,
       updated: updatedCount,
       total: existingRows.length,
+      newItems: newItems,
     };
   }
 

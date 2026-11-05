@@ -25,6 +25,7 @@ var DriveManager = (function () {
     var downloadedCount = 0;
     var skippedCount = 0;
     var failedCount = 0;
+    var downloadedFiles = [];
 
     for (var i = 0; i < rows.length; i++) {
       // Guard against Google Apps Script 6-minute execution limit
@@ -82,7 +83,10 @@ var DriveManager = (function () {
       if (!existingFiles[fileName]) {
         console.log("Downloading: " + fileName);
         try {
-          var response = UrlFetchApp.fetch(target.url, {
+          var downloadUrl = Config.USE_SCRAPER_API
+            ? Config.buildScraperUrl(target.url, false)
+            : target.url;
+          var response = UrlFetchApp.fetch(downloadUrl, {
             muteHttpExceptions: true,
             followRedirects: true,
           });
@@ -94,6 +98,7 @@ var DriveManager = (function () {
             yearFolder.createFile(blob);
             existingFiles[fileName] = true;
             downloadedCount++;
+            downloadedFiles.push(fileName);
           } else {
             console.error(
               "Failed to download " +
@@ -128,6 +133,7 @@ var DriveManager = (function () {
       downloaded: downloadedCount,
       skipped: skippedCount,
       failed: failedCount,
+      downloadedFiles: downloadedFiles,
     };
   }
 

@@ -2,6 +2,16 @@
  * Main Entry Point
  */
 function main() {
+  // Weekend Guard: Skip execution on Saturday (6) and Sunday (0)
+  var now = new Date();
+  var dayOfWeek = now.getDay();
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    console.log(
+      "Weekend detected (Day " + dayOfWeek + "). Scheduled execution bypassed.",
+    );
+    return;
+  }
+
   var startTimeMs = Date.now();
   var lock = LockService.getScriptLock();
 
@@ -13,36 +23,46 @@ function main() {
   }
 
   try {
-    console.log("Starting Vietnam Customs Scraper...");
+    console.log("Checking Vietnam Customs for latest updates...");
 
-    // 1. Fetch Data
+    // Validate that all required Script Properties are present
+    Config.validateRequiredProperties();
+
+    // 1. Fetch Latest Data (Default: Page 1 = 20 latest items)
     var allRows = Scraper.fetchAllData(Config.DEFAULT_MAX_PAGES);
-    console.log("Fetched " + allRows.length + " rows.");
+    console.log("Fetched " + allRows.length + " latest items from web.");
 
     if (allRows.length === 0) {
-      console.log("No data found. Exiting.");
+      console.log("No data returned from upstream API. Exiting.");
       return;
     }
 
-    // 2. Save to Sheets (Single-batch read/write)
+    // 2. Save to Sheets (Checks if row or link formula is new/modified)
+    var sheetStats = { added: 0, updated: 0, newItems: [] };
     try {
-      SheetManager.saveToSheet(allRows);
+      sheetStats = SheetManager.saveToSheet(allRows);
     } catch (sheetErr) {
       console.error("SheetManager failed: " + sheetErr.toString());
     }
 
-    // 3. Process Downloads (Files with folder/file caching & timeout guardrail)
+    // 3. Process Downloads (Downloads only if file is not already in Drive folder)
+    var downloadStats = {
+      downloaded: 0,
+      skipped: 0,
+      failed: 0,
+      downloadedFiles: [],
+    };
     try {
-      DriveManager.processDownloads(allRows, startTimeMs);
+      downloadStats = DriveManager.processDownloads(allRows, startTimeMs);
     } catch (driveErr) {
       console.error("DriveManager failed: " + driveErr.toString());
     }
 
-    // 4. Check for New Month & Notify LINE
+    // 4. Notify Microsoft Teams Channel IF and ONLY IF new reports or downloads occurred
     try {
-      LineManager.checkAndNotify(allRows);
-    } catch (lineErr) {
-      console.error("LineManager failed: " + lineErr.toString());
+      TeamsManager.checkAndNotify(sheetStats, downloadStats);
+    } catch (teamsErr) {
+      console.error("TeamsManager failed: " + teamsErr.toString());
     }
 
     var elapsedSec = ((Date.now() - startTimeMs) / 1000).toFixed(2);
@@ -53,18 +73,62 @@ function main() {
 }
 
 /**
- * Setup function to run once if needed to initialize Script Properties
+ * Automatically creates time-driven triggers:
+ * 11:00 AM and 3:00 PM (15:00) daily.
+ * Weekend runs are automatically bypassed by the guard in main().
+ */
+function setupTriggers() {
+  // Remove existing triggers for main to prevent duplicates
+  var allTriggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < allTriggers.length; i++) {
+    if (allTriggers[i].getHandlerFunction() === "main") {
+      ScriptApp.deleteTrigger(allTriggers[i]);
+    }
+  }
+
+  // Trigger 1: 11:00 AM
+  ScriptApp.newTrigger("main").timeBased().atHour(11).everyDays(1).create();
+
+  // Trigger 2: 3:00 PM (15:00)
+  ScriptApp.newTrigger("main").timeBased().atHour(15).everyDays(1).create();
+
+  console.log(
+    "Successfully created triggers for main() at 11:00 and 15:00 daily.",
+  );
+}
+
+/**
+ * Setup function: Validates Script Properties and sets up triggers
  */
 function setup() {
+  console.log("Running system setup & validation...");
+
+  // 1. Setup Triggers
+  setupTriggers();
+
+  // 2. Check Script Properties
   var props = PropertiesService.getScriptProperties();
-  var latestMonth = SheetManager.getLatestMonthInSheet();
-  if (latestMonth && !props.getProperty(Config.KEY_LAST_NOTIFIED_MONTH)) {
-    props.setProperty(Config.KEY_LAST_NOTIFIED_MONTH, String(latestMonth));
-    console.log("Initialized LAST_NOTIFIED_MONTH to " + latestMonth);
-  } else {
-    console.log(
-      "Current LAST_NOTIFIED_MONTH: " +
-        (props.getProperty(Config.KEY_LAST_NOTIFIED_MONTH) || "not set"),
-    );
-  }
+  console.log("--- Current Script Properties Status ---");
+  console.log(
+    "SHEET_ID: " +
+      (props.getProperty(Config.KEY_SHEET_ID) ? "Configured" : "MISSING"),
+  );
+  console.log(
+    "ROOT_FOLDER_ID: " +
+      (props.getProperty(Config.KEY_ROOT_FOLDER_ID) ? "Configured" : "MISSING"),
+  );
+  console.log(
+    "SCRAPER_API_KEY: " +
+      (props.getProperty(Config.KEY_SCRAPER_API_KEY)
+        ? "Configured"
+        : "MISSING"),
+  );
+  console.log(
+    "TEAMS_WEBHOOK_URL: " +
+      (props.getProperty(Config.KEY_TEAMS_WEBHOOK_URL)
+        ? "Configured"
+        : "MISSING"),
+  );
+
+  console.log("Setup complete.");
 }

@@ -54,7 +54,7 @@ var Scraper = (function () {
    * Sends POST request to the bridge API with retry and HTTP status validation
    */
   function fetchPage(skip, take) {
-    // Payload MUST be a JSON string, but sent with content-type x-www-form-urlencoded (quirk of this server)
+    // Payload MUST be a JSON string, sent with application/json
     var payload = {
       skip: skip,
       take: take,
@@ -74,7 +74,7 @@ var Scraper = (function () {
 
     var options = {
       method: "post",
-      contentType: "application/x-www-form-urlencoded; charset=UTF-8",
+      contentType: "application/json; charset=UTF-8",
       payload: JSON.stringify(payload), // Send JSON string as payload
       headers: {
         Accept: "application/json, text/javascript, */*; q=0.01",
@@ -88,13 +88,17 @@ var Scraper = (function () {
       muteHttpExceptions: true,
     };
 
+    var fetchUrl = Config.USE_SCRAPER_API
+      ? Config.buildScraperUrl(Config.API_ENDPOINT, true)
+      : Config.API_ENDPOINT;
+
     var response;
     var maxRetries = Config.MAX_RETRIES || 3;
     var attempt = 0;
 
     while (attempt < maxRetries) {
       try {
-        response = UrlFetchApp.fetch(Config.API_ENDPOINT, options);
+        response = UrlFetchApp.fetch(fetchUrl, options);
         var statusCode = response.getResponseCode();
 
         if (statusCode >= 200 && statusCode < 300) {
