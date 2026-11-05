@@ -113,7 +113,9 @@ var Scraper = (function () {
         );
       } catch (e) {
         attempt++;
-        console.warn("Attempt " + attempt + " failed: " + e.message);
+        console.warn(
+          "Attempt " + attempt + " failed: " + Config.sanitizeLog(e.message),
+        );
         if (attempt < maxRetries) {
           var backoffMs = attempt * 2000;
           console.log("Retrying in " + backoffMs / 1000 + " seconds...");

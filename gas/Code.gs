@@ -41,14 +41,24 @@ var Config = {
   KEY_ROOT_FOLDER_ID: "ROOT_FOLDER_ID",
   KEY_SCRAPER_API_KEY: "SCRAPER_API_KEY",
   KEY_TEAMS_WEBHOOK_URL: "TEAMS_WEBHOOK_URL",
+  KEY_PENDING_TEAMS_NOTIFICATION: "PENDING_TEAMS_NOTIFICATION",
+
+  // In-memory cache for Script Properties to prevent redundant RPC calls during loops
+  _propsCache: null,
+
+  getProps: function () {
+    if (!this._propsCache) {
+      this._propsCache =
+        PropertiesService.getScriptProperties().getProperties() || {};
+    }
+    return this._propsCache;
+  },
 
   /**
    * Retrieves Google Sheet ID from Script Properties (Strict: No hardcoding)
    */
   getSheetId: function () {
-    var id = PropertiesService.getScriptProperties().getProperty(
-      this.KEY_SHEET_ID,
-    );
+    var id = this.getProps()[this.KEY_SHEET_ID];
     if (!id || id.trim() === "") {
       throw new Error(
         "Missing Script Property '" +
@@ -67,9 +77,7 @@ var Config = {
    * Retrieves Google Drive Root Folder ID from Script Properties (Strict: No hardcoding)
    */
   getRootFolderId: function () {
-    var id = PropertiesService.getScriptProperties().getProperty(
-      this.KEY_ROOT_FOLDER_ID,
-    );
+    var id = this.getProps()[this.KEY_ROOT_FOLDER_ID];
     if (!id || id.trim() === "") {
       throw new Error(
         "Missing Script Property '" +
@@ -88,42 +96,40 @@ var Config = {
    * Retrieves ScraperAPI key from Script Properties
    */
   getScraperApiKey: function () {
-    return (
-      PropertiesService.getScriptProperties().getProperty(
-        this.KEY_SCRAPER_API_KEY,
-      ) || ""
-    ).trim();
+    return (this.getProps()[this.KEY_SCRAPER_API_KEY] || "").trim();
   },
 
   /**
    * Retrieves Microsoft Teams Incoming Webhook URL from Script Properties
    */
   getTeamsWebhookUrl: function () {
-    return (
-      PropertiesService.getScriptProperties().getProperty(
-        this.KEY_TEAMS_WEBHOOK_URL,
-      ) || ""
-    ).trim();
+    return (this.getProps()[this.KEY_TEAMS_WEBHOOK_URL] || "").trim();
   },
 
   /**
-   * Validates presence of all mandatory Script Properties before executing pipeline
+   * Sanitizes strings (URL queries, errors) to prevent leaking SCRAPER_API_KEY in logs
+   */
+  sanitizeLog: function (msg) {
+    if (!msg) return "";
+    return String(msg).replace(/api_key=[^&\s'"]+/gi, "api_key=***");
+  },
+
+  /**
+   * Validates presence of mandatory Script Properties before executing pipeline.
+   * Note: Missing TEAMS_WEBHOOK_URL logs a warning instead of aborting Sheet/Drive sync.
    */
   validateRequiredProperties: function () {
-    var props = PropertiesService.getScriptProperties();
+    var props = this.getProps();
     var missing = [];
 
-    if (!props.getProperty(this.KEY_SHEET_ID)) {
+    if (!props[this.KEY_SHEET_ID]) {
       missing.push(this.KEY_SHEET_ID);
     }
-    if (!props.getProperty(this.KEY_ROOT_FOLDER_ID)) {
+    if (!props[this.KEY_ROOT_FOLDER_ID]) {
       missing.push(this.KEY_ROOT_FOLDER_ID);
     }
-    if (this.USE_SCRAPER_API && !props.getProperty(this.KEY_SCRAPER_API_KEY)) {
+    if (this.USE_SCRAPER_API && !props[this.KEY_SCRAPER_API_KEY]) {
       missing.push(this.KEY_SCRAPER_API_KEY);
-    }
-    if (!props.getProperty(this.KEY_TEAMS_WEBHOOK_URL)) {
-      missing.push(this.KEY_TEAMS_WEBHOOK_URL);
     }
 
     if (missing.length > 0) {
@@ -131,6 +137,14 @@ var Config = {
         "Missing required Script Properties: [" +
           missing.join(", ") +
           "]. Please configure them in Project Settings > Script Properties.",
+      );
+    }
+
+    if (!props[this.KEY_TEAMS_WEBHOOK_URL]) {
+      console.warn(
+        "Warning: Script Property '" +
+          this.KEY_TEAMS_WEBHOOK_URL +
+          "' is not configured. Teams notifications will be skipped.",
       );
     }
   },

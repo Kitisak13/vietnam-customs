@@ -41,6 +41,13 @@ LANG_CONFIG = {
 }
 
 
+def sanitize_log(msg: object) -> str:
+    """Masks SCRAPER_API_KEY from logs and error messages."""
+    if not msg:
+        return ""
+    return re.sub(r"api_key=[^&\s'\"]+", "api_key=***", str(msg), flags=re.IGNORECASE)
+
+
 def load_env_key() -> str:
     """Reads SCRAPER_API_KEY from environment or .env file."""
     if os.environ.get("SCRAPER_API_KEY"):
@@ -151,7 +158,7 @@ def fetch_page(api_key: str, skip: int, take: int, language: str = "TIENG_ANH", 
                 return []
             raise requests.HTTPError(f"HTTP {resp.status_code}: {resp.text[:150]}")
         except Exception as e:
-            print(f"[Attempt {attempt}/{max_retries}] Fetch failed: {e}")
+            print(f"[Attempt {attempt}/{max_retries}] Fetch failed: {sanitize_log(e)}")
             if attempt < max_retries:
                 sleep_sec = attempt * 2
                 time.sleep(sleep_sec)
@@ -204,6 +211,7 @@ def merge_and_export_metadata(new_rows, output_dir: Path):
     """
     Merges newly scraped rows into existing reports.csv (preserving historical data),
     updates changed file links, and saves to CSV and JSON.
+    Sorts by Month descending (YYYYMM), then Title ascending (A -> Z), matching GAS SheetManager.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "reports.csv"
@@ -257,8 +265,8 @@ def merge_and_export_metadata(new_rows, output_dir: Path):
             existing_rows.append(nr)
             added_count += 1
 
-    # Sort all rows by Month (YYYYMM descending), then Title
-    existing_rows.sort(key=lambda r: (parse_month_int(r["month"]), r["content"]), reverse=True)
+    # Sort all rows by Month descending (-YYYYMM), then Title ascending (matching GAS SheetManager)
+    existing_rows.sort(key=lambda r: (-parse_month_int(r["month"]), r["content"]))
 
     # Export merged CSV with UTF-8 BOM
     with open(csv_path, mode="w", newline="", encoding="utf-8-sig") as f:
@@ -283,17 +291,17 @@ def sanitize_filename(name: str) -> str:
 
 
 def extract_extension(url: str) -> str:
-    """Extracts file extension or defaults to .xlsx."""
+    """Extracts file extension from URL, defaulting to .pdf (matching GAS DriveManager)."""
     parsed = urllib.parse.urlparse(url)
     ext = os.path.splitext(parsed.path)[1].lower()
-    return ext if ext in [".xlsx", ".xls", ".doc", ".docx", ".pdf", ".zip"] else ".xlsx"
+    return ext if ext in [".pdf", ".xlsx", ".xls", ".doc", ".docx", ".zip"] else ".pdf"
 
 
 def download_reports(rows, output_dir: Path, api_key: str):
     """
     Downloads highest priority file per row ([Official] > [Adjusted] > [Preliminary])
     into year-partitioned folders output/<YYYY>/ via ScraperAPI.
-    Skips files that already exist on disk.
+    Uses atomic writes (.part -> final) and validates Content-Type to reject HTML error pages.
     """
     print(f"\n[Downloading] Checking for new report files to archive...")
     downloaded = 0
@@ -325,8 +333,9 @@ def download_reports(rows, output_dir: Path, api_key: str):
         ext = extract_extension(target_url)
         file_name = sanitize_filename(f"[{month_norm}]{status_prefix} {row['content']}{ext}")
         file_path = year_folder / file_name
+        temp_path = year_folder / f"{file_name}.part"
 
-        if file_path.exists() and file_path.stat().st_size > 0:
+        if file_path.exists() and file_path.stat().st_size >= 100:
             skipped += 1
             continue
 
@@ -337,23 +346,40 @@ def download_reports(rows, output_dir: Path, api_key: str):
         for dl_attempt in range(1, 3):
             try:
                 with requests.get(download_proxy_url, stream=True, timeout=60) as resp:
+                    content_type = (resp.headers.get("Content-Type") or "").lower()
+
+                    # Reject HTML error/maintenance pages
+                    if "text/html" in content_type:
+                        print(f"   [Error] Rejected download for {file_name}: received HTML instead of binary file.")
+                        break
+
                     if resp.status_code == 200:
-                        with open(file_path, "wb") as f:
+                        with open(temp_path, "wb") as f:
                             for chunk in resp.iter_content(chunk_size=8192):
                                 if chunk:
                                     f.write(chunk)
-                        downloaded += 1
-                        download_success = True
-                        break
+
+                        # Atomic rename only if file size is valid (>= 100 bytes)
+                        if temp_path.exists() and temp_path.stat().st_size >= 100:
+                            temp_path.replace(file_path)
+                            downloaded += 1
+                            download_success = True
+                            break
+                        else:
+                            print(f"   [Error] Incomplete or corrupted download for {file_name} (< 100 bytes).")
+                            if temp_path.exists():
+                                temp_path.unlink()
                     elif dl_attempt < 2:
                         time.sleep(2)
                     else:
                         print(f"   [Error] HTTP {resp.status_code} for {file_name}")
             except Exception as e:
+                if temp_path.exists():
+                    temp_path.unlink()
                 if dl_attempt < 2:
                     time.sleep(2)
                 else:
-                    print(f"   [Error] Download failed for {file_name}: {e}")
+                    print(f"   [Error] Download failed for {file_name}: {sanitize_log(e)}")
 
         if not download_success:
             failed += 1

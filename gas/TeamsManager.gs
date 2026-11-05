@@ -1,15 +1,21 @@
 /**
  * Teams Manager - Handles notifications via Microsoft Teams Incoming Webhook
+ * with retry logic and pending notification queue to prevent lost alerts.
  */
 var TeamsManager = (function () {
   /**
    * Checks if new report rows or file downloads were detected.
-   * If updates exist, sends an Adaptive Card alert to MS Teams.
+   * Also flushes any pending failed notifications from previous runs.
    * @param {Object} sheetStats - Summary from SheetManager { added, updated, total, newItems }
    * @param {Object} downloadStats - Summary from DriveManager { downloaded, skipped, failed, downloadedFiles }
-   * @returns {boolean} True if notification sent, false otherwise
+   * @returns {boolean} True if current or pending notification sent, false otherwise
    */
   function checkAndNotify(sheetStats, downloadStats) {
+    var props = PropertiesService.getScriptProperties();
+
+    // 1. Flush any pending notifications that previously failed to deliver
+    flushPendingNotification(props);
+
     var added = (sheetStats && sheetStats.added) || 0;
     var updated = (sheetStats && sheetStats.updated) || 0;
     var downloaded = (downloadStats && downloadStats.downloaded) || 0;
@@ -30,36 +36,63 @@ var TeamsManager = (function () {
         updated +
         ", Downloaded: " +
         downloaded +
-        "). Sending Teams notification...",
+        "). Preparing Teams notification...",
     );
 
-    return sendTeamsCard({
+    var cardPayload = buildCardPayload({
       sheetStats: sheetStats || { added: 0, updated: 0, newItems: [] },
-      downloadStats: downloadStats || {
-        downloaded: 0,
-        skipped: 0,
-        failed: 0,
-        downloadedFiles: [],
-      },
+      downloadStats:
+        downloadStats || {
+          downloaded: 0,
+          skipped: 0,
+          failed: 0,
+          downloadedFiles: [],
+        },
       sheetId: Config.getSheetId(),
       folderId: Config.getRootFolderId(),
     });
+
+    var sent = sendWithRetry(cardPayload);
+
+    if (!sent) {
+      console.warn(
+        "Failed to deliver Teams notification after all retries. Saving to PENDING_TEAMS_NOTIFICATION for next run.",
+      );
+      props.setProperty(
+        Config.KEY_PENDING_TEAMS_NOTIFICATION,
+        JSON.stringify(cardPayload),
+      );
+    }
+
+    return sent;
   }
 
   /**
-   * Sends an Adaptive Card message to Microsoft Teams Incoming Webhook
-   * @param {Object} info
-   * @returns {boolean} True if HTTP 200/202 received
+   * Attempts to resend any queued notification from previous runs
    */
-  function sendTeamsCard(info) {
-    var webhookUrl = Config.getTeamsWebhookUrl();
-    if (!webhookUrl) {
+  function flushPendingNotification(props) {
+    try {
+      var pending = props.getProperty(Config.KEY_PENDING_TEAMS_NOTIFICATION);
+      if (pending) {
+        console.log("Found pending Teams notification from previous run. Resending...");
+        var payload = JSON.parse(pending);
+        var sent = sendWithRetry(payload);
+        if (sent) {
+          props.deleteProperty(Config.KEY_PENDING_TEAMS_NOTIFICATION);
+          console.log("Pending Teams notification delivered and cleared.");
+        }
+      }
+    } catch (e) {
       console.warn(
-        "TEAMS_WEBHOOK_URL is not configured in Script Properties. Skipping Teams alert.",
+        "Error flushing pending notification: " + Config.sanitizeLog(e.message),
       );
-      return false;
     }
+  }
 
+  /**
+   * Builds the Adaptive Card JSON structure
+   */
+  function buildCardPayload(info) {
     var nowStr = Utilities.formatDate(
       new Date(),
       Session.getScriptTimeZone() || "GMT+7",
@@ -99,7 +132,7 @@ var TeamsManager = (function () {
             .join("\n")
         : "";
 
-    var adaptiveCardPayload = {
+    return {
       type: "message",
       attachments: [
         {
@@ -158,42 +191,73 @@ var TeamsManager = (function () {
         },
       ],
     };
+  }
 
+  /**
+   * Sends payload to Teams Webhook with exponential backoff retries
+   */
+  function sendWithRetry(payload, maxRetries) {
+    var webhookUrl = Config.getTeamsWebhookUrl();
+    if (!webhookUrl) {
+      console.warn(
+        "TEAMS_WEBHOOK_URL is not configured in Script Properties. Skipping Teams alert.",
+      );
+      return false;
+    }
+
+    var retries = maxRetries || 3;
     var options = {
       method: "post",
       contentType: "application/json; charset=UTF-8",
-      payload: JSON.stringify(adaptiveCardPayload),
+      payload: JSON.stringify(payload),
       muteHttpExceptions: true,
     };
 
-    try {
-      var response = UrlFetchApp.fetch(webhookUrl, options);
-      var statusCode = response.getResponseCode();
+    for (var attempt = 1; attempt <= retries; attempt++) {
+      try {
+        var response = UrlFetchApp.fetch(webhookUrl, options);
+        var statusCode = response.getResponseCode();
 
-      if (statusCode === 200 || statusCode === 202) {
-        console.log(
-          "Teams notification delivered successfully (HTTP " +
+        if (statusCode === 200 || statusCode === 202) {
+          console.log(
+            "Teams notification delivered successfully (HTTP " +
+              statusCode +
+              ").",
+          );
+          return true;
+        }
+
+        console.warn(
+          "Attempt " +
+            attempt +
+            " to send Teams webhook returned HTTP " +
             statusCode +
-            ").",
+            ": " +
+            response.getContentText().substring(0, 200),
         );
-        return true;
+      } catch (e) {
+        console.warn(
+          "Attempt " +
+            attempt +
+            " failed with exception: " +
+            Config.sanitizeLog(e.message),
+        );
       }
 
-      console.error(
-        "Failed to send Teams notification. HTTP " +
-          statusCode +
-          ": " +
-          response.getContentText().substring(0, 300),
-      );
-      return false;
-    } catch (e) {
-      console.error("Exception sending Teams webhook: " + e.message);
-      return false;
+      if (attempt < retries) {
+        var backoffMs = attempt * 2000;
+        Utilities.sleep(backoffMs);
+      }
     }
+
+    console.error("All " + retries + " attempts to send Teams webhook failed.");
+    return false;
   }
 
   return {
     checkAndNotify: checkAndNotify,
-    sendTeamsCard: sendTeamsCard,
+    sendTeamsCard: function (info) {
+      return sendWithRetry(buildCardPayload(info));
+    },
   };
 })();

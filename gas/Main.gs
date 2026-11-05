@@ -1,13 +1,19 @@
 /**
  * Main Entry Point
+ * @param {Object} [e] - Event object passed by time-driven trigger
  */
-function main() {
-  // Weekend Guard: Skip execution on Saturday (6) and Sunday (0)
+function main(e) {
+  // Weekend Guard: Skip execution on Saturday (6) and Sunday (0) ONLY when invoked by time-driven trigger.
+  // Allows manual runs from the Apps Script Editor anytime, including weekends.
   var now = new Date();
   var dayOfWeek = now.getDay();
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
+  var isTriggerInvocation = Boolean(e && e.triggerUid);
+
+  if (isTriggerInvocation && (dayOfWeek === 0 || dayOfWeek === 6)) {
     console.log(
-      "Weekend detected (Day " + dayOfWeek + "). Scheduled execution bypassed.",
+      "Weekend detected (Day " +
+        dayOfWeek +
+        ") for scheduled trigger. Execution bypassed.",
     );
     return;
   }
@@ -75,7 +81,7 @@ function main() {
 /**
  * Automatically creates time-driven triggers:
  * 11:00 AM and 3:00 PM (15:00) daily.
- * Weekend runs are automatically bypassed by the guard in main().
+ * Weekend runs are automatically bypassed by the guard in main(e).
  */
 function setupTriggers() {
   // Remove existing triggers for main to prevent duplicates
@@ -127,7 +133,7 @@ function setup() {
     "TEAMS_WEBHOOK_URL: " +
       (props.getProperty(Config.KEY_TEAMS_WEBHOOK_URL)
         ? "Configured"
-        : "MISSING"),
+        : "OPTIONAL / NOT SET"),
   );
 
   console.log("Setup complete.");

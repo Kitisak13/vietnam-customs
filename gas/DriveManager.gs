@@ -93,7 +93,37 @@ var DriveManager = (function () {
           var statusCode = response.getResponseCode();
 
           if (statusCode >= 200 && statusCode < 300) {
+            var headers = response.getHeaders() || {};
+            var contentType = (
+              headers["Content-Type"] ||
+              headers["content-type"] ||
+              ""
+            ).toLowerCase();
+
+            // Reject HTML error/maintenance pages from upstream or proxy
+            if (contentType.indexOf("text/html") !== -1) {
+              console.error(
+                "Rejected download for " +
+                  fileName +
+                  ": upstream returned HTML page instead of binary file (" +
+                  contentType +
+                  ").",
+              );
+              failedCount++;
+              continue;
+            }
+
             var blob = response.getBlob();
+            if (blob.getBytes().length < 100) {
+              console.error(
+                "Rejected download for " +
+                  fileName +
+                  ": file content too small (< 100 bytes).",
+              );
+              failedCount++;
+              continue;
+            }
+
             blob.setName(fileName);
             yearFolder.createFile(blob);
             existingFiles[fileName] = true;
@@ -106,12 +136,17 @@ var DriveManager = (function () {
                 " (HTTP " +
                 statusCode +
                 "): " +
-                target.url,
+                Config.sanitizeLog(target.url),
             );
             failedCount++;
           }
         } catch (e) {
-          console.error("Failed to download " + fileName + ": " + e.message);
+          console.error(
+            "Failed to download " +
+              fileName +
+              ": " +
+              Config.sanitizeLog(e.message),
+          );
           failedCount++;
         }
       } else {
