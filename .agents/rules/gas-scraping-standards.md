@@ -28,3 +28,4 @@ These standards capture production-grade patterns and guardrails for automated w
 - **Trigger vs. Manual Execution Separation**: When implementing scheduling bypasses (e.g., skipping weekend runs), check `Boolean(e && e.triggerUid)`. This ensures automated triggers skip weekends while allowing engineers to manually run and test the script from the Apps Script Editor anytime.
 - **Resilient Webhook Delivery**: Webhook alerts (e.g., Microsoft Teams, Slack) must implement retries with backoff. If all attempts fail, persist the payload in `ScriptProperties` (`PENDING_NOTIFICATION`) to automatically flush on the subsequent scheduled run, guaranteeing zero lost alerts.
 - **Non-Fatal Notification Warnings**: Missing notification webhooks should log a warning rather than throwing fatal exceptions, allowing core data ingestion (Sheets & Drive) to continue uninterrupted.
+
