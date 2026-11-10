@@ -1,5 +1,5 @@
 /**
- * Drive Manager - Handles File Downloading and Folder Management with Folder/File Caching
+ * Drive Manager - Handles File Downloading and Folder Management with Folder/File Caching & Retry
  */
 var DriveManager = (function () {
   /**
@@ -7,11 +7,11 @@ var DriveManager = (function () {
    * Priority Logic: Official > Adjusted > Preliminary
    * @param {Array} rows - Scraped report rows
    * @param {number} [startTimeMs] - Execution start timestamp for timeout protection
-   * @returns {Object} Summary { downloaded, skipped, failed }
+   * @returns {Object} Summary { downloaded, skipped, failed, downloadedFiles }
    */
   function processDownloads(rows, startTimeMs) {
     if (!Array.isArray(rows) || rows.length === 0) {
-      return { downloaded: 0, skipped: 0, failed: 0 };
+      return { downloaded: 0, skipped: 0, failed: 0, downloadedFiles: [] };
     }
 
     var startMs = startTimeMs || Date.now();
@@ -82,71 +82,15 @@ var DriveManager = (function () {
 
       if (!existingFiles[fileName]) {
         console.log("Downloading: " + fileName);
-        try {
-          var downloadUrl = Config.USE_SCRAPER_API
-            ? Config.buildScraperUrl(target.url, false)
-            : target.url;
-          var response = UrlFetchApp.fetch(downloadUrl, {
-            muteHttpExceptions: true,
-            followRedirects: true,
-          });
-          var statusCode = response.getResponseCode();
+        var blob = fetchFileWithRetry(target.url, fileName);
 
-          if (statusCode >= 200 && statusCode < 300) {
-            var headers = response.getHeaders() || {};
-            var contentType = (
-              headers["Content-Type"] ||
-              headers["content-type"] ||
-              ""
-            ).toLowerCase();
-
-            // Reject HTML error/maintenance pages from upstream or proxy
-            if (contentType.indexOf("text/html") !== -1) {
-              console.error(
-                "Rejected download for " +
-                  fileName +
-                  ": upstream returned HTML page instead of binary file (" +
-                  contentType +
-                  ").",
-              );
-              failedCount++;
-              continue;
-            }
-
-            var blob = response.getBlob();
-            if (blob.getBytes().length < 100) {
-              console.error(
-                "Rejected download for " +
-                  fileName +
-                  ": file content too small (< 100 bytes).",
-              );
-              failedCount++;
-              continue;
-            }
-
-            blob.setName(fileName);
-            yearFolder.createFile(blob);
-            existingFiles[fileName] = true;
-            downloadedCount++;
-            downloadedFiles.push(fileName);
-          } else {
-            console.error(
-              "Failed to download " +
-                fileName +
-                " (HTTP " +
-                statusCode +
-                "): " +
-                Config.sanitizeLog(target.url),
-            );
-            failedCount++;
-          }
-        } catch (e) {
-          console.error(
-            "Failed to download " +
-              fileName +
-              ": " +
-              Config.sanitizeLog(e.message),
-          );
+        if (blob) {
+          blob.setName(fileName);
+          yearFolder.createFile(blob);
+          existingFiles[fileName] = true;
+          downloadedCount++;
+          downloadedFiles.push(fileName);
+        } else {
           failedCount++;
         }
       } else {
@@ -170,6 +114,108 @@ var DriveManager = (function () {
       failed: failedCount,
       downloadedFiles: downloadedFiles,
     };
+  }
+
+  /**
+   * Downloads a file with retry logic and direct-connection fallback
+   * to handle ScraperAPI HTTP 500 timeouts on large PDF files.
+   */
+  function fetchFileWithRetry(rawUrl, fileName) {
+    var maxAttempts = 3;
+
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Attempt 1 & 2: Use ScraperAPI (if enabled). Attempt 3: Fallback to direct URL fetch.
+      var useProxy = Config.USE_SCRAPER_API && attempt < maxAttempts;
+      var downloadUrl = useProxy
+        ? Config.buildScraperUrl(rawUrl, false)
+        : rawUrl;
+
+      try {
+        var response = UrlFetchApp.fetch(downloadUrl, {
+          muteHttpExceptions: true,
+          followRedirects: true,
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          },
+        });
+        var statusCode = response.getResponseCode();
+
+        if (statusCode >= 200 && statusCode < 300) {
+          var headers = response.getHeaders() || {};
+          var contentType = (
+            headers["Content-Type"] ||
+            headers["content-type"] ||
+            ""
+          ).toLowerCase();
+
+          // Reject HTML error/maintenance pages from upstream or proxy
+          if (contentType.indexOf("text/html") !== -1) {
+            console.warn(
+              "Attempt " +
+                attempt +
+                " rejected for " +
+                fileName +
+                ": returned HTML instead of binary file (" +
+                contentType +
+                ").",
+            );
+          } else {
+            var blob = response.getBlob();
+            if (blob.getBytes().length >= 100) {
+              return blob;
+            }
+            console.warn(
+              "Attempt " +
+                attempt +
+                " rejected for " +
+                fileName +
+                ": file content too small (< 100 bytes).",
+            );
+          }
+        } else {
+          console.warn(
+            "Attempt " +
+              attempt +
+              "/" +
+              maxAttempts +
+              " failed for " +
+              fileName +
+              " (HTTP " +
+              statusCode +
+              " via " +
+              (useProxy ? "ScraperAPI" : "Direct") +
+              "): " +
+              Config.sanitizeLog(rawUrl),
+          );
+        }
+      } catch (e) {
+        console.warn(
+          "Attempt " +
+            attempt +
+            "/" +
+            maxAttempts +
+            " exception for " +
+            fileName +
+            ": " +
+            Config.sanitizeLog(e.message),
+        );
+      }
+
+      if (attempt < maxAttempts) {
+        Utilities.sleep(attempt * 2000);
+      }
+    }
+
+    console.error(
+      "Failed to download " +
+        fileName +
+        " after " +
+        maxAttempts +
+        " attempts: " +
+        Config.sanitizeLog(rawUrl),
+    );
+    return null;
   }
 
   /**

@@ -13,13 +13,14 @@ var SheetManager = (function () {
 
   /**
    * Saves scraped rows to Google Sheets using single-batch reads/writes.
-   * Only updates existing rows when link formulas actually change.
+   * Only inserts or updates rows that have at least one valid file link,
+   * and automatically cleans up any existing linkless placeholder rows.
    * @param {Array} data - Scraped row objects
-   * @returns {Object} Summary counts { added, updated, total }
+   * @returns {Object} Summary counts { added, updated, total, newItems }
    */
   function saveToSheet(data) {
-    if (!Array.isArray(data) || data.length === 0) {
-      return { added: 0, updated: 0, total: 0 };
+    if (!Array.isArray(data)) {
+      return { added: 0, updated: 0, total: 0, newItems: [] };
     }
 
     var ss = SpreadsheetApp.openById(Config.SHEET_ID);
@@ -49,6 +50,7 @@ var SheetManager = (function () {
     // Read existing values and formulas in a single batch
     var existingRows = [];
     var keyToIndex = {};
+    var removedPlaceholderCount = 0;
 
     if (lastRow > 1) {
       var dataRange = sheet.getRange(2, 1, lastRow - 1, HEADERS.length);
@@ -63,12 +65,22 @@ var SheetManager = (function () {
         var monthVal = formatDate(valRow[1]);
         if (!contentVal && !monthVal) continue;
 
+        var linkPrelim = formRow[2] || String(valRow[2] || "").trim();
+        var linkAdj = formRow[3] || String(valRow[3] || "").trim();
+        var linkOfficial = formRow[4] || String(valRow[4] || "").trim();
+
+        // Automatically purge existing placeholder rows that have no links at all
+        if (!linkPrelim && !linkAdj && !linkOfficial) {
+          removedPlaceholderCount++;
+          continue;
+        }
+
         var rowRecord = [
           contentVal,
           monthVal,
-          formRow[2] || String(valRow[2] || ""),
-          formRow[3] || String(valRow[3] || ""),
-          formRow[4] || String(valRow[4] || ""),
+          linkPrelim,
+          linkAdj,
+          linkOfficial,
           valRow[5] || new Date(),
         ];
 
@@ -86,13 +98,18 @@ var SheetManager = (function () {
     data.forEach(function (row) {
       if (!row || !row.content || !row.month) return;
 
-      var contentNorm = String(row.content).trim();
-      var monthNorm = formatDate(row.month);
-      var key = contentNorm + "_" + monthNorm;
-
       var prelimFormula = formatLink(row.prelim ? row.prelim.url : "");
       var adjFormula = formatLink(row.adj ? row.adj.url : "");
       var officialFormula = formatLink(row.official ? row.official.url : "");
+
+      // Guard: Never insert or update a row if there are no valid file links
+      if (!prelimFormula && !adjFormula && !officialFormula) {
+        return;
+      }
+
+      var contentNorm = String(row.content).trim();
+      var monthNorm = formatDate(row.month);
+      var key = contentNorm + "_" + monthNorm;
 
       if (Object.prototype.hasOwnProperty.call(keyToIndex, key)) {
         var idx = keyToIndex[key];
@@ -143,7 +160,7 @@ var SheetManager = (function () {
       }
     });
 
-    if (addedCount > 0 || updatedCount > 0) {
+    if (addedCount > 0 || updatedCount > 0 || removedPlaceholderCount > 0) {
       // Sort in memory by Month (YYYYMM descending), then Content (ascending)
       existingRows.sort(function (a, b) {
         var monthDiff = parseMonthStr(b[1]) - parseMonthStr(a[1]);
@@ -151,22 +168,29 @@ var SheetManager = (function () {
         return String(a[0]).localeCompare(String(b[0]));
       });
 
-      // Ensure Month column stays formatted as plain text before batch write
-      sheet
-        .getRange(2, 2, Math.max(existingRows.length, 1), 1)
-        .setNumberFormat("@");
+      // Clear previous data rows to ensure removed placeholder rows don't leave trailing duplicates
+      if (lastRow > 1) {
+        sheet.getRange(2, 1, lastRow - 1, HEADERS.length).clearContent();
+      }
 
-      // Single batch write for all rows
-      sheet
-        .getRange(2, 1, existingRows.length, HEADERS.length)
-        .setValues(existingRows);
+      if (existingRows.length > 0) {
+        // Ensure Month column stays formatted as plain text before batch write
+        sheet.getRange(2, 2, existingRows.length, 1).setNumberFormat("@");
+
+        // Single batch write for all rows
+        sheet
+          .getRange(2, 1, existingRows.length, HEADERS.length)
+          .setValues(existingRows);
+      }
 
       console.log(
         "Sheet updated in batch: " +
           addedCount +
           " added, " +
           updatedCount +
-          " updated (total " +
+          " updated, " +
+          removedPlaceholderCount +
+          " empty placeholder(s) cleaned (total " +
           existingRows.length +
           " rows).",
       );
