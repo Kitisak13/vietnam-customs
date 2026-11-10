@@ -34,16 +34,20 @@ function main(e) {
     // Validate that all required Script Properties are present
     Config.validateRequiredProperties();
 
-    // 1. Fetch Latest Data (Default: Page 1 = 20 latest items)
+    // 1. Fetch Latest Data (Default: Page 1 = 20 latest items with valid file links)
     var allRows = Scraper.fetchAllData(Config.DEFAULT_MAX_PAGES);
-    console.log("Fetched " + allRows.length + " latest items from web.");
+    console.log(
+      "Fetched " + allRows.length + " valid items with file links from web.",
+    );
 
     if (allRows.length === 0) {
-      console.log("No data returned from upstream API. Exiting.");
+      console.log(
+        "No valid downloadable data returned from upstream API. Exiting.",
+      );
       return;
     }
 
-    // 2. Save to Sheets (Checks if row or link formula is new/modified)
+    // 2. Save to Sheets (Checks if row or link formula is new/modified and cleans empty placeholders)
     var sheetStats = { added: 0, updated: 0, newItems: [] };
     try {
       sheetStats = SheetManager.saveToSheet(allRows);
@@ -64,7 +68,7 @@ function main(e) {
       console.error("DriveManager failed: " + driveErr.toString());
     }
 
-    // 4. Notify Microsoft Teams Channel IF and ONLY IF new reports or downloads occurred
+    // 4. Notify Microsoft Teams Channel IF and ONLY IF new reports with valid files or downloads occurred
     try {
       TeamsManager.checkAndNotify(sheetStats, downloadStats);
     } catch (teamsErr) {
@@ -80,7 +84,7 @@ function main(e) {
 
 /**
  * Automatically creates time-driven triggers:
- * 11:00 AM and 3:00 PM (15:00) daily.
+ * 11:00 AM, 3:00 PM (15:00), and 6:00 PM (18:00) daily.
  * Weekend runs are automatically bypassed by the guard in main(e).
  */
 function setupTriggers() {
@@ -98,8 +102,11 @@ function setupTriggers() {
   // Trigger 2: 3:00 PM (15:00)
   ScriptApp.newTrigger("main").timeBased().atHour(15).everyDays(1).create();
 
+  // Trigger 3: 6:00 PM (18:00) - Catches delayed PDF uploads from afternoon title posts
+  ScriptApp.newTrigger("main").timeBased().atHour(18).everyDays(1).create();
+
   console.log(
-    "Successfully created triggers for main() at 11:00 and 15:00 daily.",
+    "Successfully created triggers for main() at 11:00, 15:00, and 18:00 daily.",
   );
 }
 

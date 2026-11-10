@@ -4,7 +4,7 @@
  */
 var TeamsManager = (function () {
   /**
-   * Checks if new report rows or file downloads were detected.
+   * Checks if new report rows with actual files or file downloads were detected.
    * Also flushes any pending failed notifications from previous runs.
    * @param {Object} sheetStats - Summary from SheetManager { added, updated, total, newItems }
    * @param {Object} downloadStats - Summary from DriveManager { downloaded, skipped, failed, downloadedFiles }
@@ -27,12 +27,15 @@ var TeamsManager = (function () {
     var added = (sheetStats && sheetStats.added) || 0;
     var updated = (sheetStats && sheetStats.updated) || 0;
     var downloaded = (downloadStats && downloadStats.downloaded) || 0;
+    var failed = (downloadStats && downloadStats.failed) || 0;
 
-    var hasNewUpdates = added > 0 || updated > 0 || downloaded > 0;
+    // Trigger notification ONLY when a file was newly downloaded OR sheet links were updated without download failures
+    var hasNewUpdates =
+      downloaded > 0 || ((added > 0 || updated > 0) && failed === 0);
 
     if (!hasNewUpdates) {
       console.log(
-        "No new reports or file updates found. Skipping Teams notification.",
+        "No new downloadable reports found. Skipping Teams notification.",
       );
       return false;
     }
@@ -49,13 +52,12 @@ var TeamsManager = (function () {
 
     var cardPayload = buildCardPayload({
       sheetStats: sheetStats || { added: 0, updated: 0, newItems: [] },
-      downloadStats:
-        downloadStats || {
-          downloaded: 0,
-          skipped: 0,
-          failed: 0,
-          downloadedFiles: [],
-        },
+      downloadStats: downloadStats || {
+        downloaded: 0,
+        skipped: 0,
+        failed: 0,
+        downloadedFiles: [],
+      },
       sheetId: Config.getSheetId(),
       folderId: Config.getRootFolderId(),
     });
@@ -82,7 +84,9 @@ var TeamsManager = (function () {
     try {
       var pending = props.getProperty(Config.KEY_PENDING_TEAMS_NOTIFICATION);
       if (pending) {
-        console.log("Found pending Teams notification from previous run. Resending...");
+        console.log(
+          "Found pending Teams notification from previous run. Resending...",
+        );
         var payload = JSON.parse(pending);
         var sent = sendWithRetry(payload);
         if (sent) {

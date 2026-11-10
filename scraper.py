@@ -14,7 +14,6 @@ import time
 import argparse
 import urllib.parse
 from pathlib import Path
-from datetime import datetime
 import requests
 
 # Default Configuration
@@ -167,7 +166,7 @@ def fetch_page(api_key: str, skip: int, take: int, language: str = "TIENG_ANH", 
 
 
 def scrape_latest_reports(api_key: str, max_pages: int, language: str = "TIENG_ANH"):
-    """Paginates through latest report lists and parses rows."""
+    """Paginates through latest report lists and parses rows that contain valid file links."""
     all_rows = []
     skip = 0
     take = PAGE_SIZE
@@ -181,21 +180,35 @@ def scrape_latest_reports(api_key: str, max_pages: int, language: str = "TIENG_A
             break
 
         parsed_items = []
+        skipped_placeholders = 0
         for item in raw_items:
             title = (item.get("TIEU_DE") or "").strip()
             month = (item.get("NGAY_CONG_BO") or "").strip()
             if not title or not month:
                 continue
 
+            prelim_url = normalize_link(item.get("FILE_SO_BO"))
+            adj_url = normalize_link(item.get("FILE_DIEU_CHINH"))
+            official_url = normalize_link(item.get("FILE_CHINH_THUC"))
+
+            # Skip title-only placeholders where no PDF/file link has been uploaded yet
+            if not (prelim_url or adj_url or official_url):
+                skipped_placeholders += 1
+                continue
+
             parsed_items.append({
                 "content": title,
                 "month": format_month(month),
-                "prelim_url": normalize_link(item.get("FILE_SO_BO")),
-                "adj_url": normalize_link(item.get("FILE_DIEU_CHINH")),
-                "official_url": normalize_link(item.get("FILE_CHINH_THUC")),
+                "prelim_url": prelim_url,
+                "adj_url": adj_url,
+                "official_url": official_url,
             })
 
-        print(f"Received {len(parsed_items)} items.")
+        msg = f"Received {len(parsed_items)} valid items"
+        if skipped_placeholders > 0:
+            msg += f" (skipped {skipped_placeholders} title-only placeholder(s))"
+        print(f"{msg}.")
+
         all_rows.extend(parsed_items)
 
         if len(raw_items) < take:
@@ -210,7 +223,8 @@ def scrape_latest_reports(api_key: str, max_pages: int, language: str = "TIENG_A
 def merge_and_export_metadata(new_rows, output_dir: Path):
     """
     Merges newly scraped rows into existing reports.csv (preserving historical data),
-    updates changed file links, and saves to CSV and JSON.
+    purges any existing linkless placeholder rows, updates changed file links,
+    and saves to CSV and JSON.
     Sorts by Month descending (YYYYMM), then Title ascending (A -> Z), matching GAS SheetManager.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -219,6 +233,7 @@ def merge_and_export_metadata(new_rows, output_dir: Path):
 
     existing_rows = []
     key_to_idx = {}
+    removed_placeholders = 0
 
     # Read existing historical records if CSV exists
     if csv_path.exists():
@@ -227,13 +242,25 @@ def merge_and_export_metadata(new_rows, output_dir: Path):
             for row in reader:
                 content = (row.get("Title") or "").strip()
                 month = format_month(row.get("Month") or "")
+                if not content or not month:
+                    continue
+
+                prelim_url = (row.get("Preliminary Link") or "").strip()
+                adj_url = (row.get("Adjusted Link") or "").strip()
+                official_url = (row.get("Official Link") or "").strip()
+
+                # Clean up any previously saved placeholder rows without links
+                if not (prelim_url or adj_url or official_url):
+                    removed_placeholders += 1
+                    continue
+
                 key = f"{content}_{month}"
                 record = {
                     "content": content,
                     "month": month,
-                    "prelim_url": row.get("Preliminary Link", "").strip(),
-                    "adj_url": row.get("Adjusted Link", "").strip(),
-                    "official_url": row.get("Official Link", "").strip(),
+                    "prelim_url": prelim_url,
+                    "adj_url": adj_url,
+                    "official_url": official_url,
                 }
                 key_to_idx[key] = len(existing_rows)
                 existing_rows.append(record)
@@ -242,11 +269,14 @@ def merge_and_export_metadata(new_rows, output_dir: Path):
     updated_count = 0
 
     for nr in new_rows:
+        if not (nr.get("prelim_url") or nr.get("adj_url") or nr.get("official_url")):
+            continue
+
         key = f"{nr['content']}_{nr['month']}"
         if key in key_to_idx:
             idx = key_to_idx[key]
             curr = existing_rows[idx]
-            # Check if any link formula changed/added
+            # Check if any link changed/added
             next_prelim = nr["prelim_url"] or curr["prelim_url"]
             next_adj = nr["adj_url"] or curr["adj_url"]
             next_official = nr["official_url"] or curr["official_url"]
@@ -280,7 +310,10 @@ def merge_and_export_metadata(new_rows, output_dir: Path):
         json.dump(existing_rows, f, indent=2, ensure_ascii=False)
 
     print(f"\n[Metadata Synced]")
-    print(f" -> Added: {added_count}, Updated: {updated_count}, Total in file: {len(existing_rows)} rows")
+    print(
+        f" -> Added: {added_count}, Updated: {updated_count}, "
+        f"Cleaned Placeholders: {removed_placeholders}, Total in file: {len(existing_rows)} rows"
+    )
     return added_count, updated_count, existing_rows
 
 
@@ -414,7 +447,7 @@ def main():
     scraped_rows = scrape_latest_reports(api_key, max_pages=args.pages, language=args.lang)
 
     if not scraped_rows:
-        print("No reports returned from website.")
+        print("No downloadable reports returned from website.")
         return
 
     added, updated, all_rows = merge_and_export_metadata(scraped_rows, output_dir)

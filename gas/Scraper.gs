@@ -25,12 +25,17 @@ var Scraper = (function () {
       console.log("Fetching page: " + (pageCount + 1) + ", skip: " + skip);
       try {
         var rawData = fetchPage(skip, take);
-        var rows = parseApiItems(rawData);
+        if (!rawData || rawData.length === 0) {
+          hasMore = false;
+          break;
+        }
 
-        if (rows.length === 0) {
+        var rows = parseApiItems(rawData);
+        allData = allData.concat(rows);
+
+        if (rawData.length < take) {
           hasMore = false;
         } else {
-          allData = allData.concat(rows);
           skip += take;
           pageCount++;
 
@@ -156,7 +161,8 @@ var Scraper = (function () {
   }
 
   /**
-   * Parses the JSON array into structured objects
+   * Parses the JSON array into structured objects.
+   * Filters out placeholder entries that have a title/month but no valid file URLs yet.
    */
   function parseApiItems(dataArray) {
     if (!Array.isArray(dataArray)) return [];
@@ -175,7 +181,24 @@ var Scraper = (function () {
         };
       })
       .filter(function (r) {
-        return r && r.content && r.month;
+        if (!r || !r.content || !r.month) return false;
+
+        var hasValidLink = Boolean(
+          (r.prelim && r.prelim.url) ||
+          (r.adj && r.adj.url) ||
+          (r.official && r.official.url),
+        );
+
+        if (!hasValidLink) {
+          console.log(
+            "Skipping title-only placeholder (no file uploaded yet): [" +
+              r.month +
+              "] " +
+              r.content,
+          );
+        }
+
+        return hasValidLink;
       });
   }
 
